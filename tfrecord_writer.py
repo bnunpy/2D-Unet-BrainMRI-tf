@@ -36,7 +36,7 @@ def serialize_example(image, mask, image_shape):
         'mask': _bytes_feature(mask),
         'height': _int64_feature(image_shape[0]),
         'width': _int64_feature(image_shape[1]),
-        'depth': _int64_feature(image_shape[2]),
+        'num_channels': _int64_feature(image_shape[2])
     }
 
     example_proto = tf.train.Example(features=tf.train.Features(feature=feature))
@@ -44,15 +44,14 @@ def serialize_example(image, mask, image_shape):
 
 def data_generator(imgs_path, lbls_path):
     
-    filenames = glob.glob(f'{imgs_path}\*')
-
+    filenames = os.listdir(imgs_path)
 
     for filename in filenames:
         image_file = os.path.join(imgs_path, filename)
         label_file = os.path.join(lbls_path, filename)
         image3d = nib.load(image_file)        
         label3d = nib.load(label_file)
-        for sl_idx in range(15, 140):
+        for sl_idx in range(params.START_SLICE, params.END_SLICE):
             image2d = np.asanyarray(image3d.dataobj, dtype=np.float32)[8:232,8:232,sl_idx,:]
             label2d = np.asanyarray(label3d.dataobj, dtype=np.uint8)[8:232,8:232,sl_idx]
             image2d = tf.convert_to_tensor(image2d, dtype=tf.float32)
@@ -61,59 +60,63 @@ def data_generator(imgs_path, lbls_path):
             yield image2d, label2d
 
 
-def write_tfrecord_files(mode):
+def write_tfrecord_files(mode, max_examples_per_record=1000):
     """Create tfrecord files."""
+    print('', end='\r')
     if mode == 'training':
         image_data_dir=params.IMAGETR_PATH
         label_data_dir=params.LABELTR_PATH
         tfrecords_dir=params.TRAIN_TFRECORDS_PATH
-        num_examples = params.NUM_TRAINING_IMGS*120
+        num_examples = params.NUM_TRAINING_VOLS*(params.END_SLICE-params.START_SLICE)
     elif mode == 'validation':
         image_data_dir=params.IMAGEVAL_PATH
         label_data_dir=params.LABELVAL_PATH
         tfrecords_dir=params.VALID_TFRECORDS_PATH
-        num_examples = params.NUM_VALIDATION_IMGS*120
+        num_examples = params.NUM_VALIDATION_VOLS*(params.END_SLICE-params.START_SLICE)
+    elif mode == 'evaluation':
+        image_data_dir=params.IMAGEEVAL_PATH
+        label_data_dir=params.LABELEVAL_PATH
+        tfrecords_dir=params.EVAL_TFRECORDS_PATH
+        num_examples = params.NUM_EVALUATION_VOLS*(params.END_SLICE-params.START_SLICE)
     else:
-        raise('Error: Invalid mode selected.')
-    num_examples_per_record = 1000
+        print('Error: Invalid mode selected.')
     written = 0
     
-    num_record_files = int(num_examples / (num_examples_per_record - 1)) + 1
-    record_files = [os.path.join(tfrecords_dir, f'data-{i:02}.tfrecord') for i in range(num_record_files)]
+    num_record_files = int(num_examples / (max_examples_per_record - 1)) + 1
+    record_files = [os.path.join(tfrecords_dir, f'{mode}-{i:02}.tfrecord') for i in range(num_record_files)]
 
     gen = data_generator(image_data_dir, label_data_dir)
-    for record_file in record_files:
+    for i, record_file in enumerate(record_files):
         #tq.set_postfix(record_file=record_file)
         with tf.io.TFRecordWriter(record_file, options='GZIP') as writer:
 
             for image, mask in gen:
 
-                mask = tf.convert_to_tensor(mask)
-                image = tf.convert_to_tensor(image)
+                maskt = tf.convert_to_tensor(mask)
+                imaget = tf.convert_to_tensor(image)
 
-                assert(mask.dtype == tf.uint8)
-                assert(image.dtype == tf.float32)
+                assert(imaget.dtype == tf.float32)
+                assert(maskt.dtype == tf.uint8)
 
                 # images to bytes
-                image_bytes = tf.io.serialize_tensor(image)
-                mask_bytes = tf.io.serialize_tensor(mask)
+                image_bytes = tf.io.serialize_tensor(imaget)
+                mask_bytes = tf.io.serialize_tensor(maskt)
 
                 example = serialize_example(image_bytes, mask_bytes, image.shape)
                 writer.write(example)
 
-                
-                # update counters
-                #tq.update(1)
                 written += 1
-                print(f'TFRecord file: {record_file}, Images written: {written:04}', end='\r')
+                print(f'mode: {mode}, TFRec file: {i+1:03}/{num_record_files:03}, slices written: {written:05}, img_shp: {image.shape}, mask_shp: {mask.shape}', end='\r')
                 # go out of the generator and into another file
-                if written % num_examples_per_record == 0:
+                if written % max_examples_per_record == 0:
                     break
                 
         
 if __name__ == '__main__':
-    write_tfrecord_files(mode='training')
-    write_tfrecord_files(mode='validation')
+    write_tfrecord_files(mode='evaluation', max_examples_per_record=480)
+    #write_tfrecord_files(mode='validation', max_examples_per_record=480)
+    #write_tfrecord_files(mode='training', max_examples_per_record=480)
+    
 
 
 
